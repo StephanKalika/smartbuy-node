@@ -137,7 +137,12 @@ class OrchestratorAgent:
             qty_match = re.search(r'(\d+)\s+([\w\s]+?)$', segment.strip(), re.IGNORECASE)
             if qty_match:
                 clean_item = qty_match.group(2).strip().rstrip(',').strip()
-                if clean_item and not clean_item.lower().startswith(('for', 'under')):
+                # Skip pure keywords, single-word stop words, and budget/urgency tokens
+                skip_words = {'for', 'under', 'urgent', 'asap', 'today', 'usd', 'dollars'}
+                if (clean_item
+                        and not clean_item.lower().startswith(('for', 'under'))
+                        and clean_item.lower() not in skip_words
+                        and not segment.strip().startswith('$')):
                     intent["items"].append({
                         "name": clean_item,
                         "quantity": int(qty_match.group(1)),
@@ -366,11 +371,28 @@ Budget Remaining:     ${remaining:.2f}
                     continue
                 
                 print(f"\n[Orchestrator] Processing: '{user_input}'")
-                
+
+                # Step 0: Security — context hygiene before any processing
+                try:
+                    from src.context_resolver import ContextResolver
+                except ModuleNotFoundError:
+                    from context_resolver import ContextResolver
+                is_valid, err = ContextResolver.validate_input(user_input)
+                if not is_valid:
+                    print(f"  🚫 [Security] Request blocked: {err}")
+                    print("  [Audit] Injection attempt logged.\n")
+                    self.trajectory_log.append({"step": "security_block", "reason": err, "status": "blocked"})
+                    continue
+
+                scrubbed_input, pii_hits = ContextResolver.scrub_pii(user_input)
+                if pii_hits:
+                    print(f"  🔐 [Security] {len(pii_hits)} PII element(s) detected and masked.")
+                    user_input = scrubbed_input
+
                 # Step 1: Parse Intent
                 intent = self.parse_intent(user_input)
                 print(f"  ✓ Intent parsed: {len(intent['items'])} items identified")
-                
+
                 if not intent["items"]:
                     print("  ⚠️  No items detected. Please specify quantities and product names.")
                     continue
@@ -437,15 +459,21 @@ Budget Remaining:     ${remaining:.2f}
             })
             results = response.get("result", {}).get("results", [])
 
-            # Fallback: search by first keyword (handles plurals, extra words)
+            # Fallback: try progressively simpler search terms
             if not results:
-                keyword = product_name.split()[0] if product_name.split() else product_name
-                response = self.mcp.handle_request({
-                    "method": "query_catalog",
-                    "params": {"product_name": keyword, "max_price": max_price, "limit": 1},
-                    "id": task["task_id"] + "-fallback"
-                })
-                results = response.get("result", {}).get("results", [])
+                # Build keyword candidates: first word, then singular form (strip trailing 's')
+                first_word = product_name.split()[0] if product_name.split() else product_name
+                singular = first_word.rstrip('s') if first_word.endswith('s') else first_word
+                candidates = dict.fromkeys([first_word, singular])  # deduplicate, preserve order
+                for keyword in candidates:
+                    response = self.mcp.handle_request({
+                        "method": "query_catalog",
+                        "params": {"product_name": keyword, "max_price": max_price, "limit": 1},
+                        "id": task["task_id"] + f"-fallback-{keyword}"
+                    })
+                    results = response.get("result", {}).get("results", [])
+                    if results:
+                        break
 
             if results:
                 item = results[0]
