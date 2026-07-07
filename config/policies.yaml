@@ -1,0 +1,102 @@
+# SmartBuy Node Policies Configuration
+# YAML-based deterministic gating rules for the Policy Server
+
+# Role-based access control (RBAC)
+# Defines permissions for each user role
+role_permissions:
+  admin:
+    - read
+    - write
+    - approve
+    - audit
+    - configure
+  manager:
+    - read
+    - write
+    - request_approval
+    - audit
+  employee:
+    - read
+    - request_approval
+  viewer:
+    - read
+
+# Transaction authorization limits by role ($)
+transaction_limits:
+  admin: 1000000
+  manager: 50000
+  employee: 5000
+  viewer: 0
+
+# Department authorization limits ($)
+department_limits:
+  IT: 10000
+  Engineering: 15000
+  Marketing: 8000
+  HR: 5000
+  Operations: 12000
+
+# Multi-factor authentication (MFA) gating
+mfa_required:
+  # Transactions above this amount require MFA
+  threshold: 10000
+  # Acceptable authentication methods
+  methods:
+    - hardware_token
+    - totp
+    - u2f
+
+# PII Detection patterns (regex)
+PII_patterns:
+  - "\\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}\\b"  # Email
+  - "\\b\\d{3}-\\d{2}-\\d{4}\\b"  # SSN
+  - "\\b\\d{16}\\b"  # Credit card
+  - "(?:password|secret|api_key|token)\\s*[:=]"  # Credentials
+
+# Prompt injection detection patterns
+injection_patterns:
+  - "(ignore|bypass|override).*instruction"
+  - "(delete|drop|truncate).*table"
+  - "system.*command"
+  - "sql.*injection"
+
+# Security configuration
+security:
+  sandbox_enabled: true
+  sandbox_type: "subprocess"  # Options: subprocess, docker, none
+  context_scrubbing: true
+  audit_logging: true
+  token_ttl_seconds: 60
+
+# Compliance settings
+compliance:
+  require_approval_for_cross_dept_budget: true
+  require_supplier_verification: true
+  require_vendor_audit: true
+  max_transaction_age_days: 30
+
+# Approval workflow settings
+approvals:
+  # Number of approvals required for high-value transactions
+  high_value_threshold: 25000
+  high_value_required_approvals: 2
+  
+  # Number of approvals required for cross-department orders
+  cross_department_required_approvals: 1
+
+# Audit and logging
+audit:
+  log_all_transactions: true
+  log_failed_auth: true
+  log_policy_violations: true
+  retention_days: 365
+  log_level: "INFO"
+
+# Supplier validation rules
+supplier:
+  require_verification: true
+  verify_compliance: true
+  verify_insurance: true
+  blacklist:
+    - "SuspiciousVendor.Inc"
+    - "UnverifiedSupplier.Ltd"
