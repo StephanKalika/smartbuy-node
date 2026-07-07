@@ -276,71 +276,105 @@ Rules: quantity must be an integer, budget_limit is a number or null, urgency is
         
         return tasks
     
-    def render_vibe_diff(self, fulfillment_result: Dict[str, Any], 
+    def render_vibe_diff(self, fulfillment_result: Dict[str, Any],
                         compliance_result: Dict[str, Any]) -> str:
         """
-        Render Vibe Diff: (Plain-English summary for user approval)
-        
-        Demonstrates A2UI Protocol:
-        - Translates technical operations into business language
-        - Provides human-readable transaction summary
-        - Includes MFA gating checkpoint
-        
-        Args:
-            fulfillment_result: Output from Fulfillment Agent
-            compliance_result: Output from Compliance Agent
-            
-        Returns:
-            Formatted Vibe Diff summary
+        Render Vibe Diff via Gemini LLM (A2UI Protocol).
+
+        Gemini receives structured transaction data and generates a plain-English
+        business summary — replacing the hardcoded template with live LLM narration.
+        Falls back to structured template if LLM is unavailable.
+
+        Demonstrates: LLM as A2UI renderer + Antigravity (natural language output)
         """
-        
-        vibe_diff = """
+        # Always build the structured block for the data table
+        structured = self._render_structured_block(fulfillment_result, compliance_result)
+
+        if not self.client:
+            return structured
+
+        # Ask Gemini to narrate the transaction in plain business English
+        cart = fulfillment_result.get("cart", [])
+        issues = compliance_result.get("issues", [])
+        items_text = ", ".join(
+            f"{i['quantity']}x {i['product_name']} (${i['total']:.0f})"
+            for i in cart
+        ) or "no items found in catalog"
+
+        prompt = f"""You are a procurement assistant. Write a concise 2-3 sentence plain-English business summary of this purchase request for a manager to review before approving.
+
+Transaction data:
+- Items: {items_text}
+- Total cost: ${fulfillment_result.get('total_cost', 0):.2f}
+- Department: {compliance_result.get('department', 'Unknown')}
+- Budget available: ${compliance_result.get('budget_remaining', 0):.2f}
+- Compliance status: {'APPROVED' if compliance_result.get('approved') else 'ISSUES DETECTED'}
+- Issues: {', '.join(issues) if issues else 'none'}
+
+Be direct and factual. Start with what is being purchased. End with whether it is safe to approve."""
+
+        try:
+            print("\n[Gemini] Generating Vibe Diff summary...")
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=prompt
+            )
+            llm_summary = response.text.strip()
+
+            self.trajectory_log.append({
+                "step": "vibe_diff_generated",
+                "model": self.model,
+                "status": "success"
+            })
+
+            return f"""
 ===============================================
 ✅ PROPOSED TRANSACTION (Vibe Diff)
 ───────────────────────────────────────────────
-"""
-        
-        # Add item details
-        if fulfillment_result.get("cart"):
-            for item in fulfillment_result["cart"]:
-                vibe_diff += f"""
-Item:        {item.get('product_name', 'Unknown')}
-Quantity:    {item.get('quantity', '?')}
-Unit Price:  ${item.get('unit_price', '0'):.2f}
-Subtotal:    ${item.get('total', 0):.2f}
-Supplier:    {item.get('supplier', 'TBD')}
-"""
-        
-        # Add budget info
-        total_cost = fulfillment_result.get("total_cost", 0)
-        remaining = compliance_result.get("budget_remaining", 0)
-        
-        vibe_diff += f"""
+{structured.strip()}
 ───────────────────────────────────────────────
-💰 BUDGET IMPACT:
-Total Cost:           ${total_cost:.2f}
-Department Budget:    ${compliance_result.get('budget_allocated', 0):.2f}
-Budget Remaining:     ${remaining:.2f}
-───────────────────────────────────────────────
-"""
-        
-        # Add compliance status
-        if compliance_result.get("approved"):
-            vibe_diff += "🔒 ✓ Compliance: PASSED\n"
-        else:
-            vibe_diff += "🔒 ✗ Compliance: ISSUES DETECTED\n"
-        
-        if compliance_result.get("issues"):
-            for issue in compliance_result["issues"]:
-                vibe_diff += f"   ⚠️  {issue}\n"
-        
-        vibe_diff += """
+💬 AI SUMMARY (Gemini {self.model}):
+{llm_summary}
 ───────────────────────────────────────────────
 🔐 Please confirm with Hardware MFA to proceed
 ===============================================
 """
-        
-        return vibe_diff
+        except Exception:
+            # LLM failed — fall back to structured template silently
+            return structured
+
+    def _render_structured_block(self, fulfillment_result: Dict[str, Any],
+                                  compliance_result: Dict[str, Any]) -> str:
+        """Build the deterministic structured data block (always shown)."""
+        block = ""
+
+        if fulfillment_result.get("cart"):
+            for item in fulfillment_result["cart"]:
+                block += (
+                    f"\nItem:        {item.get('product_name', 'Unknown')}\n"
+                    f"Quantity:    {item.get('quantity', '?')}\n"
+                    f"Unit Price:  ${item.get('unit_price', 0):.2f}\n"
+                    f"Subtotal:    ${item.get('total', 0):.2f}\n"
+                    f"Supplier:    {item.get('supplier', 'TBD')}\n"
+                )
+
+        total_cost = fulfillment_result.get("total_cost", 0)
+        remaining = compliance_result.get("budget_remaining", 0)
+        block += (
+            f"\n💰 BUDGET IMPACT:\n"
+            f"Total Cost:           ${total_cost:.2f}\n"
+            f"Department Budget:    ${compliance_result.get('budget_allocated', 0):.2f}\n"
+            f"Budget Remaining:     ${remaining:.2f}\n"
+        )
+
+        if compliance_result.get("approved"):
+            block += "🔒 ✓ Compliance: PASSED\n"
+        else:
+            block += "🔒 ✗ Compliance: ISSUES DETECTED\n"
+            for issue in compliance_result.get("issues", []):
+                block += f"   ⚠️  {issue}\n"
+
+        return block
     
     def run_interactive_session(self):
         """
